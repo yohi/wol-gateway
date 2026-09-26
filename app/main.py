@@ -17,7 +17,14 @@ WOL_MAC = os.environ["WOL_MAC"]
 WOL_BROADCAST = os.getenv("WOL_BROADCAST", "255.255.255.255")
 WOL_PORT = int(os.getenv("WOL_PORT", "9"))
 WOL_MIN_INTERVAL_SECONDS = int(os.getenv("WOL_MIN_INTERVAL_SECONDS", "30"))
-REQUIRE_CF_ACCESS = os.getenv("REQUIRE_CF_ACCESS", "true").lower() in {"1", "true", "yes", "on"}
+_require_cf_access_setting = os.getenv("REQUIRE_CF_ACCESS", "true").lower()
+match _require_cf_access_setting:
+    case "1" | "true" | "yes" | "on":
+        REQUIRE_CF_ACCESS = True
+    case "0" | "false" | "no" | "off":
+        REQUIRE_CF_ACCESS = False
+    case _:
+        raise ValueError(f"Invalid REQUIRE_CF_ACCESS value: {_require_cf_access_setting!r}")
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
