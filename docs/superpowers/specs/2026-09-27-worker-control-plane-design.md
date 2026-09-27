@@ -454,7 +454,8 @@ WOL_RELAY_SHARED_SECRET
 
 Account ID and API token are required by Wrangler in CI. The API token must be
 scoped to the minimum account/zone permissions necessary to deploy this Worker
-and bind the required Workers VPC resource.
+and bind the required Workers VPC resource. Direct VPC Network binding to the
+existing Tunnel requires Connectivity Directory Admin access.
 
 Account-specific resource identifiers that are not secrets should use GitHub
 Repository Variables rather than source literals where practical.
@@ -462,7 +463,7 @@ Repository Variables rather than source literals where practical.
 Candidate variable:
 
 ~~~text
-CLOUDFLARE_VPC_NETWORK_ID
+CLOUDFLARE_TUNNEL_ID
 ~~~
 
 If Wrangler requires the VPC binding identifier to be materialized in
