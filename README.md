@@ -186,17 +186,18 @@ CLOUDFLARE_API_TOKEN
 WOL_RELAY_SHARED_SECRET
 ```
 
-### GitHub Repository Variable
+### GitHub Repository Variables
 
 ```text
 CLOUDFLARE_TUNNEL_ID
+CLOUDFLARE_WORKER_AUTO_DEPLOY   # optional; set to true after initial cutover
 ```
 
 The Cloudflare API token should be scoped as narrowly as possible. Binding a Worker directly to an existing Tunnel through Workers VPC requires the token owner to have the **Connectivity Directory Admin** role.
 
 ### Worker deployment
 
-PRs run CI only. A push to `master` or manual `workflow_dispatch` runs `.github/workflows/deploy-worker.yml` and deploys with `cloudflare/wrangler-action@v4`.
+PRs run CI only. Production deploy is always available through manual `workflow_dispatch`. A push to `master` deploys only after Repository Variable `CLOUDFLARE_WORKER_AUTO_DEPLOY=true` is set. This prevents merging the initial migration PR from accidentally attempting the hostname cutover before Cloudflare secrets/DNS are ready.
 
 Worker configuration is generated from `worker/wrangler.template.json`; the Tunnel UUID is injected from `CLOUDFLARE_TUNNEL_ID`. Secrets are never written into the generated Wrangler file. The deploy workflow writes an ephemeral, git-ignored JSON secrets file and passes it to `wrangler deploy --secrets-file`, so first deploy can upload code and the required Worker secret together.
 
@@ -218,28 +219,30 @@ Private gateway origin: http://localhost:8088
    - `CLOUDFLARE_ACCOUNT_ID`
    - `CLOUDFLARE_API_TOKEN`
    - `WOL_RELAY_SHARED_SECRET`
-2. Add Repository Variable `CLOUDFLARE_TUNNEL_ID`.
+2. Add Repository Variable `CLOUDFLARE_TUNNEL_ID`; leave `CLOUDFLARE_WORKER_AUTO_DEPLOY` unset/false for the initial cutover.
 3. Put the same `WOL_RELAY_SHARED_SECRET` in the gateway `.env`.
 4. Deploy/restart the gateway relay and verify `/health` locally.
 5. Verify `cloudflared --version` is at least `2025.7.0`.
 6. Verify Tunnel transport is QUIC-capable (`auto` or `quic`) and UDP/7844 is allowed.
 7. Confirm Cloudflare Access continues protecting `wol.y-ohi.com`.
 8. Remove the old Tunnel Published Application / conflicting CNAME for `wol.y-ohi.com` **without deleting the Tunnel connector**.
-9. Run the production Worker deployment so its Custom Domain can claim `wol.y-ohi.com`.
+9. Manually run the **Deploy Worker** `workflow_dispatch` so its Custom Domain can claim `wol.y-ohi.com`.
 10. Verify:
     - Access login
     - UI loads
     - gateway relay reports online
     - AI Agent PC status changes correctly
     - one real Wake operation succeeds
+11. After the initial cutover is stable, optionally set `CLOUDFLARE_WORKER_AUTO_DEPLOY=true` to deploy future `master` pushes automatically.
 
 ### Rollback
 
 If Worker Custom Domain deployment or Workers VPC connectivity fails:
 
-1. stop further Worker cutover changes;
-2. restore the previous Tunnel Published Application / DNS ownership for `wol.y-ohi.com`;
-3. investigate VPC/Tunnel connectivity without changing the LAN WoL relay contract.
+1. set `CLOUDFLARE_WORKER_AUTO_DEPLOY=false` or remove it;
+2. stop further Worker cutover changes;
+3. restore the previous Tunnel Published Application / DNS ownership for `wol.y-ohi.com`;
+4. investigate VPC/Tunnel connectivity without changing the LAN WoL relay contract.
 
 ## Development
 

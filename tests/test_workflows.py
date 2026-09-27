@@ -17,6 +17,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("workingDirectory: \"worker\"", text)
         self.assertIn("--secrets-file .secrets.production.json", text)
         self.assertIn('test -n "$WOL_RELAY_SHARED_SECRET"', text)
+        self.assertIn("vars.CLOUDFLARE_WORKER_AUTO_DEPLOY", text)
+        self.assertIn("github.event_name == 'workflow_dispatch'", text)
 
     def test_ci_has_no_live_wrangler_deploy(self):
         text = (ROOT / ".github/workflows/ci.yml").read_text()

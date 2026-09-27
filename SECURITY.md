@@ -74,9 +74,10 @@ GitHub Secrets:
 - `CLOUDFLARE_API_TOKEN`
 - `WOL_RELAY_SHARED_SECRET`
 
-GitHub Repository Variable:
+GitHub Repository Variables:
 
 - `CLOUDFLARE_TUNNEL_ID`
+- `CLOUDFLARE_WORKER_AUTO_DEPLOY` (optional production push gate; `true` enables automatic `master` deploys)
 
 The Tunnel UUID is an identifier, not a credential. Tunnel tokens/credentials must not be committed or passed through this repository. Production CI writes `WOL_RELAY_SHARED_SECRET` only to an ephemeral git-ignored secrets file on the GitHub-hosted runner and supplies it to Wrangler with `--secrets-file`; the cleanup step removes the file even on failure.
 
