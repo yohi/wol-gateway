@@ -174,7 +174,8 @@ ai-agent
 ~~~
 
 The Worker rejects unknown target IDs. The browser cannot provide MAC address,
-broadcast address, relay destination, or other network parameters.
+broadcast address, relay destination, or other network parameters. Wake requests
+also require `X-WOL-Confirm: wake` as CSRF defense in depth.
 
 The Worker returns:
 
@@ -236,8 +237,8 @@ hard-coded in Worker configuration/code and is never derived from a browser requ
 Conceptually:
 
 ~~~ts
-env.HOME_NETWORK.fetch("http://127.0.0.1:8088/internal/status")
-env.HOME_NETWORK.fetch("http://127.0.0.1:8088/internal/wake", ...)
+env.HOME_NETWORK.fetch("http://localhost:8088/internal/status")
+env.HOME_NETWORK.fetch("http://localhost:8088/internal/wake", ...)
 ~~~
 
 The exact private destination used during deployment must be verified against
@@ -395,9 +396,10 @@ Proposed structure:
 ~~~text
 worker/
   package.json
-  package-lock.json
   tsconfig.json
-  wrangler.jsonc
+  wrangler.template.json
+  scripts/
+    render-wrangler.mjs
   src/
     index.ts
     api/
@@ -408,14 +410,12 @@ worker/
       relay.ts
     relays/
       gateway.ts
-    ui/
-      index.html
-      app.js
-      style.css
+  public/
+    index.html
+    app.js
+    style.css
   test/
-    targets.test.ts
-    gateway-relay.test.ts
-    routing.test.ts
+    *.test.mjs
 ~~~
 
 Implementation may simplify this structure when files are too small to justify
@@ -430,7 +430,7 @@ Two concerns are separated.
 PRs run:
 
 ~~~text
-npm ci
+npm install
 npm test
 npm run typecheck
 ~~~
@@ -442,7 +442,9 @@ PR validation does not deploy production.
 ### Production deployment
 
 Pushes to master deploy the Worker with Cloudflare's official
-cloudflare/wrangler-action@v4.
+cloudflare/wrangler-action@v4. The workflow writes an ephemeral git-ignored
+secrets JSON file and passes it with `wrangler deploy --secrets-file` so the
+first deployment can create the Worker and required secret atomically.
 
 GitHub Secrets:
 
@@ -513,7 +515,8 @@ Tests must cover:
 - target offline -> Wake routes to GatewayRelay;
 - relay unavailable -> target becomes unknown and wake returns 503;
 - no arbitrary destination can be injected through the public API;
-- gateway failures are sanitized.
+- gateway failures are sanitized;
+- public Wake without `X-WOL-Confirm: wake` is rejected before relay access.
 
 ### Gateway tests
 
