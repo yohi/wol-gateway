@@ -269,10 +269,12 @@ CLOUDFLARE_TUNNEL_ID=550e8400-e29b-41d4-a716-446655440000 \
   node scripts/render-wrangler.mjs
 ```
 
-A real Wrangler dry-run requires npm/Cloudflare tooling/network access:
+A real Wrangler dry-run requires npm/Cloudflare tooling/network access and a placeholder for the required Worker secret:
 
 ```bash
-npx wrangler@4 deploy --dry-run --config wrangler.generated.json
+printf '%s\n' '{"WOL_RELAY_SHARED_SECRET":"local-dry-run-placeholder"}' > .secrets.ci.json
+npx wrangler@4 deploy --dry-run --config wrangler.generated.json --secrets-file .secrets.ci.json
+rm -f .secrets.ci.json
 ```
 
 ## Future ESP32 extension

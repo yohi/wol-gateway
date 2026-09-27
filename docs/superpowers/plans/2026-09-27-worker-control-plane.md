@@ -18,6 +18,7 @@
 - Worker dependencies use `npm install` rather than `npm install` because the implementation intentionally does not commit a generated package lock at this stage.
 - Production secret delivery uses an ephemeral `.secrets.production.json` with `wrangler deploy --secrets-file` rather than wrangler-action's `secrets` input; wrangler-action uploads secrets before deploy, which is unsafe for first Worker creation.
 - Public Wake retains `X-WOL-Confirm: wake` as CSRF defense in depth.
+- Initial production cutover is manual workflow_dispatch; `master` auto-deploy is gated by Repository Variable `CLOUDFLARE_WORKER_AUTO_DEPLOY=true`.
 
 ## Global Constraints
 
@@ -33,7 +34,7 @@
 - Worker-to-gateway secret: `WOL_RELAY_SHARED_SECRET`, never exposed to browser code/logs.
 - No Durable Object, ESP32 code, WebSocket protocol, relay failover, shutdown/reboot, or arbitrary destination support.
 - PR CI never deploys production.
-- Push to `master` deploys with `cloudflare/wrangler-action@v4`.
+- Manual workflow_dispatch deploys with `cloudflare/wrangler-action@v4`; push to `master` deploys only when `CLOUDFLARE_WORKER_AUTO_DEPLOY=true`.
 - GitHub Secrets: `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `WOL_RELAY_SHARED_SECRET`.
 - GitHub Repository Variable: `CLOUDFLARE_TUNNEL_ID`.
 - Worker compatibility date: `2026-09-27`.
@@ -339,7 +340,7 @@ Verify `cloudflared --version` >= 2025.7.0, QUIC not disabled, outbound UDP/7844
 
 **Interfaces:**
 - Secrets: `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `WOL_RELAY_SHARED_SECRET`.
-- Variable: `CLOUDFLARE_TUNNEL_ID`.
+- Variables: `CLOUDFLARE_TUNNEL_ID`, optional `CLOUDFLARE_WORKER_AUTO_DEPLOY`.
 
 - [ ] **Step 1: Add no-deploy CI workflow**
 

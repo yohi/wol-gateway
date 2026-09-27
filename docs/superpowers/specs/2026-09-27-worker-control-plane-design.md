@@ -441,8 +441,7 @@ PR validation does not deploy production.
 
 ### Production deployment
 
-Pushes to master deploy the Worker with Cloudflare's official
-cloudflare/wrangler-action@v4. The workflow writes an ephemeral git-ignored
+Production deploy is always available through manual workflow_dispatch. Pushes to master deploy only when Repository Variable `CLOUDFLARE_WORKER_AUTO_DEPLOY=true` is set, preventing the initial migration merge from cutting over the hostname prematurely. Deployment uses Cloudflare's official cloudflare/wrangler-action@v4. The workflow writes an ephemeral git-ignored
 secrets JSON file and passes it with `wrangler deploy --secrets-file` so the
 first deployment can create the Worker and required secret atomically.
 
@@ -462,10 +461,11 @@ existing Tunnel requires Connectivity Directory Admin access.
 Account-specific resource identifiers that are not secrets should use GitHub
 Repository Variables rather than source literals where practical.
 
-Candidate variable:
+Repository variables:
 
 ~~~text
 CLOUDFLARE_TUNNEL_ID
+CLOUDFLARE_WORKER_AUTO_DEPLOY  # optional; true after initial cutover
 ~~~
 
 If Wrangler requires the VPC binding identifier to be materialized in
@@ -569,7 +569,7 @@ The implementation is complete when:
 8. Worker code has an explicit relay interface suitable for a future Esp32Relay.
 9. No Durable Object or ESP32 implementation is added yet.
 10. PR CI runs Worker tests/typecheck and Python tests.
-11. Push to master deploys the Worker via GitHub Actions.
+11. Manual workflow_dispatch deploys production; master pushes deploy only after CLOUDFLARE_WORKER_AUTO_DEPLOY=true.
 12. Deployment credentials exist only in GitHub/Cloudflare secret stores.
 13. Tunnel token remains outside this repository.
 14. No arbitrary destination or arbitrary command execution is introduced.
