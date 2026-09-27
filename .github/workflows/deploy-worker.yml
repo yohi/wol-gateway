@@ -1,0 +1,66 @@
+name: Deploy Worker
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wol-gateway-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || vars.CLOUDFLARE_WORKER_AUTO_DEPLOY == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Worker dependencies
+        working-directory: worker
+        run: npm install
+
+      - name: Run Worker tests
+        working-directory: worker
+        run: npm test
+
+      - name: Typecheck Worker
+        working-directory: worker
+        run: npm run typecheck
+
+      - name: Render production Wrangler config
+        working-directory: worker
+        env:
+          CLOUDFLARE_TUNNEL_ID: ${{ vars.CLOUDFLARE_TUNNEL_ID }}
+        run: node scripts/render-wrangler.mjs
+
+      - name: Write Worker secret file
+        working-directory: worker
+        env:
+          WOL_RELAY_SHARED_SECRET: ${{ secrets.WOL_RELAY_SHARED_SECRET }}
+        run: |
+          test -n "$WOL_RELAY_SHARED_SECRET"
+          node -e 'const fs=require("fs"); fs.writeFileSync(".secrets.production.json", JSON.stringify({WOL_RELAY_SHARED_SECRET: process.env.WOL_RELAY_SHARED_SECRET}))'
+          chmod 600 .secrets.production.json
+
+      - name: Deploy Worker
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "4"
+          workingDirectory: "worker"
+          command: deploy --config wrangler.generated.json --secrets-file .secrets.production.json
+
+      - name: Remove Worker secret file
+        if: always()
+        working-directory: worker
+        run: rm -f .secrets.production.json

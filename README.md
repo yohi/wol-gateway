@@ -1,232 +1,166 @@
 # wol-gateway
 
-Cloudflare Tunnel + Cloudflare Access を入口にし、宅内ゲートウェイPCから固定対象へ Wake-on-LAN Magic Packet を送る最小構成です。
+`wol.y-ohi.com` から自宅LAN内の固定PCを安全に Wake-on-LAN するための小さな control plane / relay です。
 
-## 1. Requirements
-
-### Functional
-- 外出先のブラウザから `https://wol.y-ohi.com/` を開ける。
-- Cloudflare Access を通過したユーザーだけが UI を利用できる。
-- `Wake` 操作は固定済みの 1 台へだけ Magic Packet を送る。
-- 任意 MAC、任意 broadcast address、任意コマンドはリクエストから指定できない。
-- 連打防止の minimum interval を持つ。
-- `/health` は WoL を実行しない。
-
-### Security
-- Router の inbound port forwarding は不要。
-- WoL API は `127.0.0.1:8088` のみで listen する。
-- Cloudflare Tunnel も同一ホストから localhost origin に接続する。
-- Cloudflare Access を認証・認可境界とする。
-- `/api/wake` は `POST` のみ。
-- `X-WOL-Confirm: wake` を必須にし、単純な cross-site form POST を拒否する。
-- CORS は有効化しない。
-- Docker container は read-only、`cap_drop: ALL`、`no-new-privileges`。
-- WoL API に shell 実行機能を持たせない。
-- ログに MAC address / Tunnel token / Access JWT を出さない。
-
-## 2. Architecture
+## Architecture
 
 ```text
-External browser
-      |
-    HTTPS
-      |
+Browser
+  |
+  v
 Cloudflare Access
-      |
-Cloudflare Tunnel
-      |
-127.0.0.1:8088
-      |
-  wol-api
-      |
-UDP Magic Packet -> LAN directed broadcast
-      |
-Target PC
+  |
+  v
+Cloudflare Worker  (wol.y-ohi.com)
+  |- Static UI
+  |- GET  /api/targets
+  |- GET  /api/relays
+  `- POST /api/targets/ai-agent/wake
+         |
+         v
+  Workers VPC Network binding: HOME_NETWORK
+         |
+         v
+  existing Cloudflare Tunnel
+         |
+         v
+Home Gateway PC / FastAPI relay
+  |- GET  /health
+  |- GET  /internal/status
+  `- POST /internal/targets/ai-agent/wake
+         |
+         v
+  UDP Wake-on-LAN Magic Packet
+         |
+         v
+  AI Agent PC
 ```
 
-Cloudflare Tunnel 自体で WoL broadcast を転送するのではなく、HTTP control plane と LAN 内 WoL delivery を分離します。
+### Design assumptions
 
-## 3. Prerequisites
+- 宅内ゲートウェイPCは原則常時ON。
+- 既存の Cloudflare Tunnel を再利用する。
+- このリポジトリは Tunnel connector / Tunnel token を管理しない。
+- 公開UI/APIは Cloudflare Worker に置く。
+- FastAPI はLAN側の固定WoL relay専用。
+- Wake対象は `ai-agent` 1台のみ。
+- arbitrary MAC / IP / URL / shell command は受け付けない。
+- 将来ESP32を追加する場合も、公開APIは変えず `WolRelay` の別実装として追加する。
 
-対象PC側:
-- BIOS/UEFI で Wake-on-LAN を有効化。
-- NIC / OS 側でも WoL を有効化。
-- 有線LANを推奨。
-- シャットダウン後も NIC に給電される設定であること。
+Workers VPC は 2026-09-27 時点で beta です。
 
-ゲートウェイPC側:
-- Docker Engine + Docker Compose plugin。
-- 対象PCと同じ LAN/VLAN から directed broadcast を送れること。
-- outbound Internet connection。
+## Public UI
 
-Cloudflare:
-- Cloudflare 管理下の domain。
-- Cloudflare Tunnel。
-- Cloudflare Access self-hosted application。
+Cloudflare Access 認証後、UIには以下を表示します。
 
-## 4. Local preparation
+- **宅内ゲートウェイPC**: `Online` / `Unavailable`
+- **AIエージェントPC**: `Online` / `Offline` / `Unknown`
+
+Relayへ到達できない場合、AI PCを `Offline` と断定せず `Unknown` にします。
+
+Wakeボタンは次の場合だけ有効です。
+
+```text
+Gateway relay = Online
+AI Agent PC   = Offline
+```
+
+ブラウザは5秒ごとにWorker APIをpollします。Wake送信後は最大90秒間起動確認状態になり、起動を確認できなければ再試行可能になります。
+
+## Public API
+
+### GET /api/targets
+
+```json
+{
+  "targets": [
+    {
+      "id": "ai-agent",
+      "name": "AIエージェントPC",
+      "status": "offline",
+      "wakeAvailable": true,
+      "relay": {
+        "id": "home-gateway",
+        "status": "online"
+      }
+    }
+  ]
+}
+```
+
+### GET /api/relays
+
+```json
+{
+  "relays": [
+    {
+      "id": "home-gateway",
+      "type": "gateway",
+      "status": "online"
+    }
+  ]
+}
+```
+
+### POST /api/targets/ai-agent/wake
+
+Required header:
+
+```http
+X-WOL-Confirm: wake
+```
+
+This custom header is a CSRF defense-in-depth measure: a simple cross-site HTML form cannot send it.
+
+Responses:
+
+- `202`: Wake accepted
+- `409`: target already online
+- `429`: rate limited
+- `503`: relay unavailable / target state unknown
+- `404`: unknown target
+
+Browser requests cannot supply a MAC address, broadcast address, relay URL, private host, or arbitrary target destination.
+
+## Home gateway setup
+
+### Requirements
+
+- Ubuntu Server / Docker Engine / Docker Compose plugin
+- AI Agent PC と同じLANから directed broadcast を送信できること
+- existing `cloudflared >= 2025.7.0`
+- Tunnel transport が `auto` または `quic`
+- outbound UDP/7844 が許可されていること
+
+Workers VPC は HTTP/2-only Tunnel transport では正常に動作しません。
+
+### Environment
 
 ```bash
 cp .env.example .env
 chmod 600 .env
 ```
 
-`.env` を編集します。
-
 ```dotenv
 WOL_MAC=AA:BB:CC:DD:EE:FF
 WOL_BROADCAST=192.168.1.255
 WOL_PORT=9
+
+AI_AGENT_HOST=192.168.1.20
+AI_AGENT_PORT=22
+AI_AGENT_PROBE_TIMEOUT_SECONDS=0.8
+
 WOL_MIN_INTERVAL_SECONDS=30
-REQUIRE_CF_ACCESS=true
-CLOUDFLARE_TUNNEL_TOKEN=...
+WOL_RELAY_SHARED_SECRET=<long-random-secret>
+LOG_LEVEL=INFO
 ```
 
-### Directed broadcast
+`WOL_RELAY_SHARED_SECRET` はWorker Secretと同じ値にします。
 
-たとえば gateway が `192.168.1.10/24` なら、通常は:
-
-```text
-192.168.1.255
-```
-
-です。
-
-ネットワーク構成により broadcast が異なるため、`ip addr` / `ip route` で確認してください。
-
-## 5. Verify WoL before Cloudflare
-
-Cloudflare を設定する前に、まず LAN 内で WoL が成立することを確認してください。
-
-このリポジトリでは API を起動して localhost から動作確認できます。ただし `REQUIRE_CF_ACCESS=true` の場合 `/api/wake` は Access assertion がないため拒否します。
-
-初回の LAN 試験時だけ一時的に:
-
-```dotenv
-REQUIRE_CF_ACCESS=false
-```
-
-として:
-
-```bash
-docker compose up -d --build wol-api
-
-curl -i \
-  -X POST \
-  -H 'X-WOL-Confirm: wake' \
-  http://127.0.0.1:8088/api/wake
-```
-
-確認後は必ず:
-
-```dotenv
-REQUIRE_CF_ACCESS=true
-```
-
-へ戻します。
-
-## 6. Create the Tunnel connector first — but do not publish the hostname yet
-
-Cloudflare Dashboard:
-
-```text
-Networking
-  -> Tunnels
-  -> Create Tunnel
-```
-
-Tunnel connector を作成し、Docker 用の Tunnel token を取得します。`.env` の
-`CLOUDFLARE_TUNNEL_TOKEN` に保存してください。
-
-この時点では `wol.y-ohi.com` の Published application route はまだ追加しません。
-
-## 7. Create Cloudflare Access before publishing
-
-Zero Trust / Access で Self-hosted application を作成します。
-
-```text
-Application domain:
-wol.y-ohi.com
-```
-
-Policy は最初は極小にします。
-
-例:
-
-```text
-Action:
-Allow
-
-Include:
-Emails -> 自分のメールアドレス
-```
-
-この Access application が有効になったことを確認してから Tunnel route を公開します。
-
-## 8. Publish the application through the Tunnel
-
-Tunnel に Published application route を追加します。
-
-```text
-Hostname:
-wol.y-ohi.com
-
-Service URL:
-http://localhost:8088
-```
-
-Tunnel 設定で `Protect with Access` を有効にしてください。これにより cloudflared 側でも
-Access token validation を行わせ、origin bypass / misconfiguration に対する防御を追加します。
-
-`cloudflared` は `network_mode: host` なので、この `localhost` はゲートウェイPC上の
-`wol-api` を指します。
-
-起動:
+### Start relay
 
 ```bash
 docker compose up -d --build
-```
-
-確認:
-
-```bash
-docker compose ps
-docker compose logs --tail=100 cloudflared
-```
-
-ブラウザから:
-
-```text
-https://wol.y-ohi.com/
-```
-
-へアクセスし、Access authentication 後に `Wake` を押します。
-
-## 9. Tests
-
-Magic Packet unit tests:
-
-```bash
-make test
-```
-
-Expected:
-
-```text
-3 tests ... OK
-```
-
-Compose validation:
-
-```bash
-docker compose config
-```
-
-## 10. Operational checks
-
-起動後:
-
-```bash
 curl http://127.0.0.1:8088/health
 ```
 
@@ -236,51 +170,131 @@ Expected:
 {"status":"ok"}
 ```
 
-Public endpoint は Cloudflare Access authentication が必須です。
+Internal endpoints require:
 
-Wake request logs:
-
-```bash
-docker compose logs --tail=100 wol-api
+```http
+Authorization: Bearer <WOL_RELAY_SHARED_SECRET>
 ```
 
-ログは actor の Access email、broadcast address、port のみを記録し、MAC address や Access JWT は出力しません。
+## Cloudflare / GitHub configuration
 
-## 11. Acceptance criteria
+### GitHub Secrets
 
-- [ ] Router に inbound port forward が存在しない。
-- [ ] `ss -ltnp` で API が `127.0.0.1:8088` のみに bind している。
-- [ ] Access 未認証状態で `wol.y-ohi.com` の UI / API に到達できない。
-- [ ] Tunnel の `Protect with Access` が有効である。
-- [ ] Access 認証済みブラウザから UI が開く。
-- [ ] `POST /api/wake` 以外で Magic Packet が送信されない。
-- [ ] `X-WOL-Confirm` が無い POST は 400。
-- [ ] repeated request は 429。
-- [ ] Magic Packet で対象PCが起動する。
-- [ ] container は `cap_drop: ALL` / `read_only` / `no-new-privileges`。
-- [ ] `.env` は Git 管理されない。
+```text
+CLOUDFLARE_ACCOUNT_ID
+CLOUDFLARE_API_TOKEN
+WOL_RELAY_SHARED_SECRET
+```
 
-## 12. Deliberately out of scope for v1
+### GitHub Repository Variables
 
-- 任意 MAC address 指定
-- 複数端末管理
-- remote shutdown / reboot
-- shell command execution
-- SSH proxy
-- WARP private-network access
-- power-state を断定する monitoring
+```text
+CLOUDFLARE_TUNNEL_ID
+CLOUDFLARE_WORKER_AUTO_DEPLOY   # optional; set to true after initial cutover
+```
 
-「Magic Packet を送れた」ことと「PC が起動完了した」ことは別です。v1 は前者だけを責務とします。
+The Cloudflare API token should be scoped as narrowly as possible. Binding a Worker directly to an existing Tunnel through Workers VPC requires the token owner to have the **Connectivity Directory Admin** role.
 
-## 13. Suggested v2
+### Worker deployment
 
-必要になった場合だけ追加します。
+PRs run CI only. Production deploy is always available through manual `workflow_dispatch`. A push to `master` deploys only after Repository Variable `CLOUDFLARE_WORKER_AUTO_DEPLOY=true` is set. This prevents merging the initial migration PR from accidentally attempting the hostname cutover before Cloudflare secrets/DNS are ready.
 
-- 固定 target の複数台対応
-- target ごとの Access policy
-- fixed TCP probe による `reachable / unreachable` 表示
-- Cloudflare rate limiting
-- Prometheus/OpenTelemetry metrics
-- audit log retention
+Worker configuration is generated from `worker/wrangler.template.json`; the Tunnel UUID is injected from `CLOUDFLARE_TUNNEL_ID`. Secrets are never written into the generated Wrangler file. The deploy workflow writes an ephemeral, git-ignored JSON secrets file and passes it to `wrangler deploy --secrets-file`, so first deploy can upload code and the required Worker secret together.
 
-いずれも `arbitrary destination` や `arbitrary command execution` には拡張しない方針を維持します。
+The Worker uses:
+
+```text
+Custom Domain: wol.y-ohi.com
+workers.dev: disabled
+Static Assets: worker/public
+VPC binding: HOME_NETWORK -> existing Tunnel UUID
+Private gateway origin: http://localhost:8088
+```
+
+`localhost` is resolved from the Tunnel connector side. If the existing `cloudflared` runs in an isolated container network rather than the gateway host network, the connector must be able to reach the relay service; use host networking or a gateway-local private address/hostname before production cutover.
+
+## Production cutover
+
+1. Add GitHub Secrets:
+   - `CLOUDFLARE_ACCOUNT_ID`
+   - `CLOUDFLARE_API_TOKEN`
+   - `WOL_RELAY_SHARED_SECRET`
+2. Add Repository Variable `CLOUDFLARE_TUNNEL_ID`; leave `CLOUDFLARE_WORKER_AUTO_DEPLOY` unset/false for the initial cutover.
+3. Put the same `WOL_RELAY_SHARED_SECRET` in the gateway `.env`.
+4. Deploy/restart the gateway relay and verify `/health` locally.
+5. Verify `cloudflared --version` is at least `2025.7.0`.
+6. Verify Tunnel transport is QUIC-capable (`auto` or `quic`) and UDP/7844 is allowed.
+7. Confirm Cloudflare Access continues protecting `wol.y-ohi.com`.
+8. Remove the old Tunnel Published Application / conflicting CNAME for `wol.y-ohi.com` **without deleting the Tunnel connector**.
+9. Manually run the **Deploy Worker** `workflow_dispatch` so its Custom Domain can claim `wol.y-ohi.com`.
+10. Verify:
+    - Access login
+    - UI loads
+    - gateway relay reports online
+    - AI Agent PC status changes correctly
+    - one real Wake operation succeeds
+11. After the initial cutover is stable, optionally set `CLOUDFLARE_WORKER_AUTO_DEPLOY=true` to deploy future `master` pushes automatically.
+
+### Rollback
+
+If Worker Custom Domain deployment or Workers VPC connectivity fails:
+
+1. set `CLOUDFLARE_WORKER_AUTO_DEPLOY=false` or remove it;
+2. stop further Worker cutover changes;
+3. restore the previous Tunnel Published Application / DNS ownership for `wol.y-ohi.com`;
+4. investigate VPC/Tunnel connectivity without changing the LAN WoL relay contract.
+
+## Development
+
+### Python
+
+```bash
+python -m pip install -r requirements.txt -r requirements-dev.txt
+python -m unittest discover -s tests -v
+```
+
+### Worker
+
+```bash
+cd worker
+npm install
+npm test
+npm run typecheck
+```
+
+Generate production-shaped Wrangler config locally with a test UUID:
+
+```bash
+CLOUDFLARE_TUNNEL_ID=550e8400-e29b-41d4-a716-446655440000 \
+  node scripts/render-wrangler.mjs
+```
+
+A real Wrangler dry-run requires npm/Cloudflare tooling/network access and a placeholder for the required Worker secret:
+
+```bash
+printf '%s\n' '{"WOL_RELAY_SHARED_SECRET":"local-dry-run-placeholder"}' > .secrets.ci.json
+npx wrangler@4 deploy --dry-run --config wrangler.generated.json --secrets-file .secrets.ci.json
+rm -f .secrets.ci.json
+```
+
+## Future ESP32 extension
+
+The Worker uses a relay abstraction:
+
+```text
+WolRelay
+  |- GatewayRelay   (implemented now)
+  `- Esp32Relay     (future)
+```
+
+A future ESP32 relay can keep an outbound WebSocket to a Durable Object and implement the same logical relay interface. The browser/API contract does not need to change.
+
+Out of scope now:
+
+- ESP32 firmware
+- Durable Objects
+- WebSocket device protocol
+- automatic relay failover
+- waking the home gateway itself
+- remote shutdown/reboot
+- arbitrary target destinations
