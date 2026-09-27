@@ -6,9 +6,18 @@
 
 **Architecture:** The Worker owns static assets, target/relay state, and the public HTTP API. A `GatewayRelay` calls the home gateway over a Workers VPC Network binding tied to the existing Tunnel; FastAPI becomes an authenticated internal relay adapter only. The relay interface stays transport-agnostic so a future Durable Object-backed `Esp32Relay` can be added without changing browser routes.
 
-**Tech Stack:** Python 3.14, FastAPI, unittest, Docker Compose, TypeScript, Cloudflare Workers, Workers Static Assets, Workers VPC Network binding, Wrangler 4, Vitest, GitHub Actions, `cloudflare/wrangler-action@v4`.
+**Tech Stack:** Python 3.14, FastAPI, unittest, Docker Compose, TypeScript, Cloudflare Workers, Workers Static Assets, Workers VPC Network binding, Wrangler 4, Node built-in node:test, GitHub Actions, `cloudflare/wrangler-action@v4`.
 
 **Spec:** `docs/superpowers/specs/2026-09-27-worker-control-plane-design.md`
+
+## Implementation rulings
+
+- No subagent dispatch tool is available in this harness, so execution uses the Native fallback while preserving task order, TDD, and final whole-branch review.
+- Worker tests use Node's built-in `node:test` rather than Node built-in node:test so local RED/GREEN verification does not depend on registry access.
+- The fixed GatewayRelay origin is `http://localhost:8088`, matching Cloudflare Workers VPC's documented Tunnel-side localhost service model.
+- Worker dependencies use `npm install` rather than `npm install` because the implementation intentionally does not commit a generated package lock at this stage.
+- Production secret delivery uses an ephemeral `.secrets.production.json` with `wrangler deploy --secrets-file` rather than wrangler-action's `secrets` input; wrangler-action uploads secrets before deploy, which is unsafe for first Worker creation.
+- Public Wake retains `X-WOL-Confirm: wake` as CSRF defense in depth.
 
 ## Global Constraints
 
@@ -120,7 +129,6 @@ Delete `app/static/*`. Keep WoL/probe settings, add `WOL_RELAY_SHARED_SECRET=rep
 
 **Files:**
 - Create: `worker/package.json`
-- Create: `worker/package-lock.json`
 - Create: `worker/tsconfig.json`
 - Create: `worker/src/domain/target.ts`
 - Create: `worker/src/domain/relay.ts`
@@ -137,9 +145,9 @@ Delete `app/static/*`. Keep WoL/probe settings, add `WOL_RELAY_SHARED_SECRET=rep
 
 - [ ] **Step 1: Scaffold Worker tooling**
 
-Add strict TypeScript, Vitest, Wrangler 4, Workers types, and scripts `test`, `typecheck`, `wrangler:dry-run`.
+Add strict TypeScript, Node built-in node:test, Wrangler 4, Workers types, and scripts `test`, `typecheck`, `wrangler:dry-run`.
 
-Run: `cd worker && npm ci && npm run typecheck`
+Run: `cd worker && npm install && npm run typecheck`
 
 Expected: exit 0.
 
@@ -160,7 +168,7 @@ Expected: PASS.
 - [ ] **Step 4: Write failing GatewayRelay tests**
 
 Using a fake `HOME_NETWORK.fetch`, assert:
-- fixed URL `http://127.0.0.1:8088/internal/status`;
+- fixed URL `http://localhost:8088/internal/status`;
 - bearer secret header;
 - VPC fetch exception -> relay unavailable;
 - malformed/unexpected gateway status -> target unknown;
@@ -276,7 +284,6 @@ Expected: PASS.
 - Create: `worker/test/render-wrangler.test.mjs`
 - Create: `worker/.gitignore`
 - Modify: `worker/package.json`
-- Modify: `worker/package-lock.json`
 
 **Interfaces:**
 - Consumes Repository Variable `CLOUDFLARE_TUNNEL_ID`.
@@ -344,7 +351,7 @@ PR/push CI:
 - Python tests;
 - `docker compose config`;
 - setup Node with npm cache;
-- `npm ci`;
+- `npm install`;
 - Worker tests;
 - typecheck;
 - render Wrangler config with documentation UUID;
@@ -361,14 +368,15 @@ Trigger on push to `master` plus `workflow_dispatch`.
 Use:
 - `permissions: contents: read`;
 - production concurrency with no cancellation of an in-flight deploy;
-- checkout + Node setup + `npm ci`;
+- checkout + Node setup + `npm install`;
 - config render using GitHub Repository Variable `CLOUDFLARE_TUNNEL_ID`;
 - `cloudflare/wrangler-action@v4`;
 - `wranglerVersion: "4"`;
 - `workingDirectory: "worker"`;
 - `apiToken` and `accountId` from GitHub Secrets;
-- action `secrets` input containing `WOL_RELAY_SHARED_SECRET`, with the matching environment variable;
-- command `deploy --config wrangler.generated.json`.
+- write an ephemeral git-ignored `.secrets.production.json` from `WOL_RELAY_SHARED_SECRET`;
+- command `deploy --config wrangler.generated.json --secrets-file .secrets.production.json`;
+- remove the secret file in an `if: always()` cleanup step.
 
 Never echo secrets.
 
@@ -428,7 +436,7 @@ Run:
 
 `docker compose config`
 
-`cd worker && npm ci && npm test && npm run typecheck`
+`cd worker && npm install && npm test && npm run typecheck`
 
 `CLOUDFLARE_TUNNEL_ID=550e8400-e29b-41d4-a716-446655440000 node scripts/render-wrangler.mjs`
 
