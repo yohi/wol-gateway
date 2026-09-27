@@ -50,7 +50,16 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         headers: { "content-type": "application/json" },
       });
     }
-    return wakeTarget(decodeURIComponent(wakeMatch[1]), relay);
+    let targetId: string;
+    try {
+      targetId = decodeURIComponent(wakeMatch[1]);
+    } catch {
+      return new Response(JSON.stringify({ error: "invalid_target_id" }), {
+        status: 400,
+        headers: { "content-type": "application/json", "cache-control": "no-store" },
+      });
+    }
+    return wakeTarget(targetId, relay);
   }
 
   if (url.pathname.startsWith("/api/")) {

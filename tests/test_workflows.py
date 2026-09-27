@@ -16,6 +16,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("vars.CLOUDFLARE_TUNNEL_ID", text)
         self.assertIn("workingDirectory: \"worker\"", text)
         self.assertIn("--secrets-file .secrets.production.json", text)
+        self.assertIn('test -n "$WOL_RELAY_SHARED_SECRET"', text)
 
     def test_ci_has_no_live_wrangler_deploy(self):
         text = (ROOT / ".github/workflows/ci.yml").read_text()

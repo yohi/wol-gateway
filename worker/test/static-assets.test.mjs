@@ -10,3 +10,16 @@ for (const file of ['index.html', 'app.js', 'style.css']) {
     }
   });
 }
+
+
+test('_headers hardens static UI responses', async () => {
+  const text = await readFile(new URL('../public/_headers', import.meta.url), 'utf8');
+  for (const expected of [
+    'X-Frame-Options: DENY',
+    'X-Content-Type-Options: nosniff',
+    'Referrer-Policy: no-referrer',
+    "Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+  ]) {
+    assert.ok(text.includes(expected), `missing ${expected}`);
+  }
+});

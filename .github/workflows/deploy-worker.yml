@@ -46,6 +46,7 @@ jobs:
         env:
           WOL_RELAY_SHARED_SECRET: ${{ secrets.WOL_RELAY_SHARED_SECRET }}
         run: |
+          test -n "$WOL_RELAY_SHARED_SECRET"
           node -e 'const fs=require("fs"); fs.writeFileSync(".secrets.production.json", JSON.stringify({WOL_RELAY_SHARED_SECRET: process.env.WOL_RELAY_SHARED_SECRET}))'
           chmod 600 .secrets.production.json
 

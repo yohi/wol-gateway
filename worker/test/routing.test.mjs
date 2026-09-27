@@ -38,3 +38,22 @@ test('wake requires custom confirmation header before relay access', async () =>
   assert.equal(response.status, 400);
   assert.equal(calls, 0);
 });
+
+
+test('malformed encoded wake target is rejected before relay access', async () => {
+  let calls = 0;
+  const env = envWith(async()=>{ calls++; return new Response(); });
+  const response = await handleRequest(new Request('https://wol.y-ohi.com/api/targets/%E0%A4%A/wake', {
+    method:'POST',
+    headers:{ 'X-WOL-Confirm':'wake' },
+  }), env);
+  assert.equal(response.status, 400);
+  assert.equal(calls, 0);
+});
+
+test('dynamic API responses are no-store', async () => {
+  const response = await handleRequest(new Request('https://wol.y-ohi.com/api/targets'), envWith(async()=>
+    new Response(JSON.stringify({ relay:'online', targets:{ 'ai-agent':{ status:'offline' } } }), { status:200 })
+  ));
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+});
