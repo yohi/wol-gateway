@@ -5,9 +5,13 @@ import unittest
 
 
 class CloudflareAccessConfigTests(unittest.TestCase):
-    def run_app_with_access_setting(self, value: str) -> subprocess.CompletedProcess[str]:
+    def run_app_with_access_setting(
+        self,
+        value: str,
+    ) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
         env["WOL_MAC"] = "AA:BB:CC:DD:EE:FF"
+        env["AI_AGENT_HOST"] = "192.0.2.10"
         env["REQUIRE_CF_ACCESS"] = value
 
         return subprocess.run(

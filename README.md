@@ -1,30 +1,21 @@
 # wol-gateway
 
-Cloudflare Tunnel + Cloudflare Access を入口にし、宅内ゲートウェイPCから固定対象へ Wake-on-LAN Magic Packet を送る最小構成です。
+Cloudflare Access + **既存 Cloudflare Tunnel** を入口にし、原則常時稼働の
+宅内ゲートウェイPCから AIエージェントPCを監視・Wake-on-LAN する構成です。
 
-## 1. Requirements
+## Design decision
 
-### Functional
-- 外出先のブラウザから `https://wol.y-ohi.com/` を開ける。
-- Cloudflare Access を通過したユーザーだけが UI を利用できる。
-- `Wake` 操作は固定済みの 1 台へだけ Magic Packet を送る。
-- 任意 MAC、任意 broadcast address、任意コマンドはリクエストから指定できない。
-- 連打防止の minimum interval を持つ。
-- `/health` は WoL を実行しない。
+このリポジトリでは次を前提とします。
 
-### Security
-- Router の inbound port forwarding は不要。
-- WoL API は `127.0.0.1:8088` のみで listen する。
-- Cloudflare Tunnel も同一ホストから localhost origin に接続する。
-- Cloudflare Access を認証・認可境界とする。
-- `/api/wake` は `POST` のみ。
-- `X-WOL-Confirm: wake` を必須にし、単純な cross-site form POST を拒否する。
-- CORS は有効化しない。
-- Docker container は read-only、`cap_drop: ALL`、`no-new-privileges`。
-- WoL API に shell 実行機能を持たせない。
-- ログに MAC address / Tunnel token / Access JWT を出さない。
+- 宅内ゲートウェイPCは常時ON。
+- 既存の `cloudflared` / Cloudflare Tunnel を再利用する。
+- `wol-gateway` 自身は `cloudflared` を起動しない。
+- `CLOUDFLARE_TUNNEL_TOKEN` はこのリポジトリで管理しない。
+- Wake対象は固定された AIエージェントPC 1台。
+- UIには宅内GWとAIエージェントPCの状態を表示する。
+- 宅内GW自身をこのアプリからWakeすることはしない。
 
-## 2. Architecture
+## Architecture
 
 ```text
 External browser
@@ -33,198 +24,136 @@ External browser
       |
 Cloudflare Access
       |
-Cloudflare Tunnel
+Existing Cloudflare Tunnel
       |
 127.0.0.1:8088
       |
-  wol-api
+wol-api on Home Gateway PC
       |
-UDP Magic Packet -> LAN directed broadcast
+      +-- TCP probe --> AI Agent PC
       |
-Target PC
+      +-- UDP Magic Packet --> AI Agent PC
 ```
 
-Cloudflare Tunnel 自体で WoL broadcast を転送するのではなく、HTTP control plane と LAN 内 WoL delivery を分離します。
+宅内GWが停止した場合は、Tunnel connector と WoL relay も停止するため、
+この構成だけでは宅内GW自身を復旧できません。これは意図したスコープ外です。
 
-## 3. Prerequisites
+## UI behavior
 
-対象PC側:
-- BIOS/UEFI で Wake-on-LAN を有効化。
-- NIC / OS 側でも WoL を有効化。
-- 有線LANを推奨。
-- シャットダウン後も NIC に給電される設定であること。
+`https://wol.y-ohi.com/` にログインすると2台を表示します。
 
-ゲートウェイPC側:
-- Docker Engine + Docker Compose plugin。
-- 対象PCと同じ LAN/VLAN から directed broadcast を送れること。
-- outbound Internet connection。
+```text
+┌─────────────────────────┐
+│ 宅内ゲートウェイPC       │
+│ ● オンライン             │
+│                         │
+│ [ 常時稼働 ]             │
+└─────────────────────────┘
 
-Cloudflare:
-- Cloudflare 管理下の domain。
-- Cloudflare Tunnel。
-- Cloudflare Access self-hosted application。
+┌─────────────────────────┐
+│ AIエージェントPC         │
+│ ● オフライン             │
+│                         │
+│ [ Wake ]                │
+└─────────────────────────┘
+```
 
-## 4. Local preparation
+AIエージェントPCがオンラインなら Wake ボタンは無効になります。
+状態はブラウザから5秒ごとに更新します。
+
+## Status semantics
+
+AIエージェントPCの状態は固定 TCP endpoint への到達性で判定します。
+
+例:
+
+```dotenv
+AI_AGENT_HOST=192.168.1.20
+AI_AGENT_PORT=22
+```
+
+- TCP connect成功: `online`
+- TCP connection refused: `online`
+- timeout / network error: `offline`
+
+connection refused でも対象PCからTCP応答が返っているため online とします。
+
+これは厳密な電源状態ではなく **network reachability** です。
+Firewall が probe を silent drop する構成では誤判定するため、SSH等の安定した
+TCP endpoint を指定してください。
+
+## Requirements
+
+### Functional
+
+- Cloudflare Access 認証後にUIを開ける。
+- 宅内GWを online の WoL relay として表示する。
+- AIエージェントPCの到達状態を表示する。
+- AI PC が offline の場合のみ Wake 操作できる。
+- Wake先MAC / broadcast / probe先はサーバー側固定。
+- Wake連打をrate limitする。
+- `/health` はprobeもWoLも実行しない。
+
+### Security
+
+- Router inbound port forwarding不要。
+- APIは `127.0.0.1:8088` のみlisten。
+- Cloudflare Accessを認証・認可境界とする。
+- `POST /api/wake` のみがMagic Packetを送信する。
+- `X-WOL-Confirm: wake` 必須。
+- CORSを有効化しない。
+- read-only container。
+- `cap_drop: ALL`。
+- `no-new-privileges`。
+- shell executionなし。
+
+## Setup
+
+### 1. Prepare environment
 
 ```bash
 cp .env.example .env
 chmod 600 .env
 ```
 
-`.env` を編集します。
+`.env`:
 
 ```dotenv
 WOL_MAC=AA:BB:CC:DD:EE:FF
 WOL_BROADCAST=192.168.1.255
 WOL_PORT=9
+
+AI_AGENT_HOST=192.168.1.20
+AI_AGENT_PORT=22
+AI_AGENT_PROBE_TIMEOUT_SECONDS=0.8
+
 WOL_MIN_INTERVAL_SECONDS=30
 REQUIRE_CF_ACCESS=true
-CLOUDFLARE_TUNNEL_TOKEN=...
+LOG_LEVEL=INFO
 ```
 
-### Directed broadcast
+**Tunnel token は不要です。**
 
-たとえば gateway が `192.168.1.10/24` なら、通常は:
+### 2. Verify WoL inside the LAN
 
-```text
-192.168.1.255
-```
+Cloudflareを設定する前に、LAN内からAIエージェントPCへMagic Packetを送り、
+実際に起動できることを確認してください。
 
-です。
+対象PC側では以下を確認します。
 
-ネットワーク構成により broadcast が異なるため、`ip addr` / `ip route` で確認してください。
+- BIOS/UEFI Wake-on-LAN有効
+- NIC / OS Wake-on-LAN有効
+- shutdown後もNICへ給電
+- 有線LAN推奨
 
-## 5. Verify WoL before Cloudflare
-
-Cloudflare を設定する前に、まず LAN 内で WoL が成立することを確認してください。
-
-このリポジトリでは API を起動して localhost から動作確認できます。ただし `REQUIRE_CF_ACCESS=true` の場合 `/api/wake` は Access assertion がないため拒否します。
-
-初回の LAN 試験時だけ一時的に:
-
-```dotenv
-REQUIRE_CF_ACCESS=false
-```
-
-として:
-
-```bash
-docker compose up -d --build wol-api
-
-curl -i \
-  -X POST \
-  -H 'X-WOL-Confirm: wake' \
-  http://127.0.0.1:8088/api/wake
-```
-
-確認後は必ず:
-
-```dotenv
-REQUIRE_CF_ACCESS=true
-```
-
-へ戻します。
-
-## 6. Create the Tunnel connector first — but do not publish the hostname yet
-
-Cloudflare Dashboard:
-
-```text
-Networking
-  -> Tunnels
-  -> Create Tunnel
-```
-
-Tunnel connector を作成し、Docker 用の Tunnel token を取得します。`.env` の
-`CLOUDFLARE_TUNNEL_TOKEN` に保存してください。
-
-この時点では `wol.y-ohi.com` の Published application route はまだ追加しません。
-
-## 7. Create Cloudflare Access before publishing
-
-Zero Trust / Access で Self-hosted application を作成します。
-
-```text
-Application domain:
-wol.y-ohi.com
-```
-
-Policy は最初は極小にします。
-
-例:
-
-```text
-Action:
-Allow
-
-Include:
-Emails -> 自分のメールアドレス
-```
-
-この Access application が有効になったことを確認してから Tunnel route を公開します。
-
-## 8. Publish the application through the Tunnel
-
-Tunnel に Published application route を追加します。
-
-```text
-Hostname:
-wol.y-ohi.com
-
-Service URL:
-http://localhost:8088
-```
-
-Tunnel 設定で `Protect with Access` を有効にしてください。これにより cloudflared 側でも
-Access token validation を行わせ、origin bypass / misconfiguration に対する防御を追加します。
-
-`cloudflared` は `network_mode: host` なので、この `localhost` はゲートウェイPC上の
-`wol-api` を指します。
-
-起動:
+### 3. Start wol-api on the home gateway
 
 ```bash
 docker compose up -d --build
-```
-
-確認:
-
-```bash
 docker compose ps
-docker compose logs --tail=100 cloudflared
 ```
 
-ブラウザから:
-
-```text
-https://wol.y-ohi.com/
-```
-
-へアクセスし、Access authentication 後に `Wake` を押します。
-
-## 9. Tests
-
-Magic Packet unit tests:
-
-```bash
-make test
-```
-
-Expected:
-
-```text
-3 tests ... OK
-```
-
-Compose validation:
-
-```bash
-docker compose config
-```
-
-## 10. Operational checks
-
-起動後:
+health check:
 
 ```bash
 curl http://127.0.0.1:8088/health
@@ -236,51 +165,114 @@ Expected:
 {"status":"ok"}
 ```
 
-Public endpoint は Cloudflare Access authentication が必須です。
+### 4. Protect wol.y-ohi.com with Cloudflare Access
 
-Wake request logs:
+Cloudflare AccessでSelf-hosted applicationを作成します。
 
-```bash
-docker compose logs --tail=100 wol-api
+```text
+Application domain:
+wol.y-ohi.com
 ```
 
-ログは actor の Access email、broadcast address、port のみを記録し、MAC address や Access JWT は出力しません。
+最小のAllow policy例:
 
-## 11. Acceptance criteria
+```text
+Action:
+Allow
 
-- [ ] Router に inbound port forward が存在しない。
-- [ ] `ss -ltnp` で API が `127.0.0.1:8088` のみに bind している。
-- [ ] Access 未認証状態で `wol.y-ohi.com` の UI / API に到達できない。
-- [ ] Tunnel の `Protect with Access` が有効である。
-- [ ] Access 認証済みブラウザから UI が開く。
-- [ ] `POST /api/wake` 以外で Magic Packet が送信されない。
-- [ ] `X-WOL-Confirm` が無い POST は 400。
-- [ ] repeated request は 429。
-- [ ] Magic Packet で対象PCが起動する。
-- [ ] container は `cap_drop: ALL` / `read_only` / `no-new-privileges`。
-- [ ] `.env` は Git 管理されない。
+Include:
+Emails -> 自分のメールアドレス
+```
 
-## 12. Deliberately out of scope for v1
+### 5. Add a route to the existing Tunnel
 
-- 任意 MAC address 指定
-- 複数端末管理
+**新しいTunnelは作成しません。**
+
+現在宅内GWで動いているTunnelに Published application を追加します。
+
+```text
+Hostname:
+wol.y-ohi.com
+
+Service URL:
+http://localhost:8088
+```
+
+既存 `cloudflared` が localhost の `wol-api` へ接続します。
+
+このリポジトリのComposeには `cloudflared` serviceはありません。
+
+## API
+
+### Status
+
+```http
+GET /api/status
+```
+
+Response example:
+
+```json
+{
+  "gateway": {
+    "status": "online",
+    "role": "wol-relay"
+  },
+  "ai_agent": {
+    "status": "offline",
+    "last_wake_at": null
+  },
+  "probe": {
+    "type": "tcp",
+    "port": 22
+  },
+  "min_interval_seconds": 30
+}
+```
+
+### Wake
+
+```http
+POST /api/wake
+X-WOL-Confirm: wake
+```
+
+AI PCがすでにprobeへ応答している場合は `409 Conflict` を返し、
+Magic Packetを送りません。
+
+## Tests
+
+```bash
+make test
+docker compose config
+```
+
+## Acceptance criteria
+
+- [ ] `CLOUDFLARE_TUNNEL_TOKEN` がrepo / `.env.example` に存在しない。
+- [ ] Composeに `cloudflared` serviceが存在しない。
+- [ ] 既存Cloudflare Tunnelを利用する。
+- [ ] `wol.y-ohi.com -> http://localhost:8088` が既存Tunnelに設定される。
+- [ ] `wol.y-ohi.com` がCloudflare Accessで保護される。
+- [ ] UIに宅内GWとAIエージェントPCの2台が表示される。
+- [ ] 宅内GWは常時稼働relayとして表示される。
+- [ ] AI PC状態が5秒ごとに更新される。
+- [ ] AI PC online時はWakeボタンが無効。
+- [ ] AI PC offline時のみWake操作できる。
+- [ ] APIから任意MAC/IPを指定できない。
+- [ ] repeated Wake requestがrate limitされる。
+- [ ] Router inbound port forwardingが存在しない。
+- [ ] APIが `127.0.0.1:8088` のみにbindしている。
+- [ ] Magic PacketでAIエージェントPCが実際に起動する。
+
+## Out of scope
+
+- 宅内GW自身のWake
+- ESP32等の独立relay
+- SwitchBotによる非常用電源制御
+- 複数Wake target
 - remote shutdown / reboot
-- shell command execution
-- SSH proxy
-- WARP private-network access
-- power-state を断定する monitoring
+- arbitrary shell execution
+- authoritative hardware power-state detection
 
-「Magic Packet を送れた」ことと「PC が起動完了した」ことは別です。v1 は前者だけを責務とします。
-
-## 13. Suggested v2
-
-必要になった場合だけ追加します。
-
-- 固定 target の複数台対応
-- target ごとの Access policy
-- fixed TCP probe による `reachable / unreachable` 表示
-- Cloudflare rate limiting
-- Prometheus/OpenTelemetry metrics
-- audit log retention
-
-いずれも `arbitrary destination` や `arbitrary command execution` には拡張しない方針を維持します。
+宅内GWの非常時復旧は、実際に必要性が生じた時点で独立した経路として追加します。

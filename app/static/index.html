@@ -3,18 +3,56 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Wake-on-LAN Gateway</title>
+  <title>Home Wake-on-LAN</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <main class="card">
-    <p class="eyebrow">HOME GATEWAY</p>
-    <h1>AI Agent PC</h1>
-    <p id="status">Gateway status: checking…</p>
-    <button id="wake" type="button">Wake</button>
-    <p id="result" aria-live="polite"></p>
-    <p class="note">The button sends one fixed Wake-on-LAN magic packet. It does not execute arbitrary commands.</p>
+  <main class="shell">
+    <header>
+      <p class="eyebrow">HOME POWER CONTROL</p>
+      <h1>Wake-on-LAN</h1>
+      <p class="lead">宅内ゲートウェイをrelayとして、AIエージェントPCを監視・起動します。</p>
+    </header>
+
+    <section class="grid" aria-live="polite">
+      <article class="device-card">
+        <div class="device-top">
+          <div>
+            <p class="device-kind">WOL RELAY</p>
+            <h2>宅内ゲートウェイPC</h2>
+          </div>
+          <span class="status online">
+            <span class="dot" aria-hidden="true"></span>
+            オンライン
+          </span>
+        </div>
+        <p class="description">このページを配信している常時稼働のWoL relayです。</p>
+        <button type="button" disabled>常時稼働</button>
+      </article>
+
+      <article class="device-card">
+        <div class="device-top">
+          <div>
+            <p class="device-kind">WOL TARGET</p>
+            <h2>AIエージェントPC</h2>
+          </div>
+          <span id="ai-status" class="status unknown">
+            <span class="dot" aria-hidden="true"></span>
+            確認中
+          </span>
+        </div>
+        <p id="ai-detail" class="description">到達状態を確認しています…</p>
+        <button id="wake" type="button" disabled>確認中…</button>
+        <p id="result" class="result" aria-live="polite"></p>
+      </article>
+    </section>
+
+    <footer>
+      <span id="updated">未更新</span>
+      <span>AI状態判定: TCP reachability</span>
+    </footer>
   </main>
+
   <script src="/app.js"></script>
 </body>
 </html>
