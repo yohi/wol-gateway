@@ -1,122 +1,145 @@
 # wol-gateway
 
-Cloudflare Access + **既存 Cloudflare Tunnel** を入口にし、原則常時稼働の
-宅内ゲートウェイPCから AIエージェントPCを監視・Wake-on-LAN する構成です。
-
-## Design decision
-
-このリポジトリでは次を前提とします。
-
-- 宅内ゲートウェイPCは常時ON。
-- 既存の `cloudflared` / Cloudflare Tunnel を再利用する。
-- `wol-gateway` 自身は `cloudflared` を起動しない。
-- `CLOUDFLARE_TUNNEL_TOKEN` はこのリポジトリで管理しない。
-- Wake対象は固定された AIエージェントPC 1台。
-- UIには宅内GWとAIエージェントPCの状態を表示する。
-- 宅内GW自身をこのアプリからWakeすることはしない。
+`wol.y-ohi.com` から自宅LAN内の固定PCを安全に Wake-on-LAN するための小さな control plane / relay です。
 
 ## Architecture
 
 ```text
-External browser
-      |
-    HTTPS
-      |
+Browser
+  |
+  v
 Cloudflare Access
-      |
-Existing Cloudflare Tunnel
-      |
-127.0.0.1:8088
-      |
-wol-api on Home Gateway PC
-      |
-      +-- TCP probe --> AI Agent PC
-      |
-      +-- UDP Magic Packet --> AI Agent PC
+  |
+  v
+Cloudflare Worker  (wol.y-ohi.com)
+  |- Static UI
+  |- GET  /api/targets
+  |- GET  /api/relays
+  `- POST /api/targets/ai-agent/wake
+         |
+         v
+  Workers VPC Network binding: HOME_NETWORK
+         |
+         v
+  existing Cloudflare Tunnel
+         |
+         v
+Home Gateway PC / FastAPI relay
+  |- GET  /health
+  |- GET  /internal/status
+  `- POST /internal/targets/ai-agent/wake
+         |
+         v
+  UDP Wake-on-LAN Magic Packet
+         |
+         v
+  AI Agent PC
 ```
 
-宅内GWが停止した場合は、Tunnel connector と WoL relay も停止するため、
-この構成だけでは宅内GW自身を復旧できません。これは意図したスコープ外です。
+### Design assumptions
 
-## UI behavior
+- 宅内ゲートウェイPCは原則常時ON。
+- 既存の Cloudflare Tunnel を再利用する。
+- このリポジトリは Tunnel connector / Tunnel token を管理しない。
+- 公開UI/APIは Cloudflare Worker に置く。
+- FastAPI はLAN側の固定WoL relay専用。
+- Wake対象は `ai-agent` 1台のみ。
+- arbitrary MAC / IP / URL / shell command は受け付けない。
+- 将来ESP32を追加する場合も、公開APIは変えず `WolRelay` の別実装として追加する。
 
-`https://wol.y-ohi.com/` にログインすると2台を表示します。
+Workers VPC は 2026-09-27 時点で beta です。
+
+## Public UI
+
+Cloudflare Access 認証後、UIには以下を表示します。
+
+- **宅内ゲートウェイPC**: `Online` / `Unavailable`
+- **AIエージェントPC**: `Online` / `Offline` / `Unknown`
+
+Relayへ到達できない場合、AI PCを `Offline` と断定せず `Unknown` にします。
+
+Wakeボタンは次の場合だけ有効です。
 
 ```text
-┌─────────────────────────┐
-│ 宅内ゲートウェイPC       │
-│ ● オンライン             │
-│                         │
-│ [ 常時稼働 ]             │
-└─────────────────────────┘
-
-┌─────────────────────────┐
-│ AIエージェントPC         │
-│ ● オフライン             │
-│                         │
-│ [ Wake ]                │
-└─────────────────────────┘
+Gateway relay = Online
+AI Agent PC   = Offline
 ```
 
-AIエージェントPCがオンラインなら Wake ボタンは無効になります。
-状態はブラウザから5秒ごとに更新します。
+ブラウザは5秒ごとにWorker APIをpollします。Wake送信後は最大90秒間起動確認状態になり、起動を確認できなければ再試行可能になります。
 
-## Status semantics
+## Public API
 
-AIエージェントPCの状態は固定 TCP endpoint への到達性で判定します。
+### GET /api/targets
 
-例:
-
-```dotenv
-AI_AGENT_HOST=192.168.1.20
-AI_AGENT_PORT=22
+```json
+{
+  "targets": [
+    {
+      "id": "ai-agent",
+      "name": "AIエージェントPC",
+      "status": "offline",
+      "wakeAvailable": true,
+      "relay": {
+        "id": "home-gateway",
+        "status": "online"
+      }
+    }
+  ]
+}
 ```
 
-- TCP connect成功: `online`
-- TCP connection refused: `online`
-- timeout / network error: `offline`
+### GET /api/relays
 
-connection refused でも対象PCからTCP応答が返っているため online とします。
+```json
+{
+  "relays": [
+    {
+      "id": "home-gateway",
+      "type": "gateway",
+      "status": "online"
+    }
+  ]
+}
+```
 
-これは厳密な電源状態ではなく **network reachability** です。
-Firewall が probe を silent drop する構成では誤判定するため、SSH等の安定した
-TCP endpoint を指定してください。
+### POST /api/targets/ai-agent/wake
 
-## Requirements
+Required header:
 
-### Functional
+```http
+X-WOL-Confirm: wake
+```
 
-- Cloudflare Access 認証後にUIを開ける。
-- 宅内GWを online の WoL relay として表示する。
-- AIエージェントPCの到達状態を表示する。
-- AI PC が offline の場合のみ Wake 操作できる。
-- Wake先MAC / broadcast / probe先はサーバー側固定。
-- Wake連打をrate limitする。
-- `/health` はprobeもWoLも実行しない。
+This custom header is a CSRF defense-in-depth measure: a simple cross-site HTML form cannot send it.
 
-### Security
+Responses:
 
-- Router inbound port forwarding不要。
-- APIは `127.0.0.1:8088` のみlisten。
-- Cloudflare Accessを認証・認可境界とする。
-- `POST /api/wake` のみがMagic Packetを送信する。
-- `X-WOL-Confirm: wake` 必須。
-- CORSを有効化しない。
-- read-only container。
-- `cap_drop: ALL`。
-- `no-new-privileges`。
-- shell executionなし。
+- `202`: Wake accepted
+- `409`: target already online
+- `429`: rate limited
+- `503`: relay unavailable / target state unknown
+- `404`: unknown target
 
-## Setup
+Browser requests cannot supply a MAC address, broadcast address, relay URL, private host, or arbitrary target destination.
 
-### 1. Prepare environment
+## Home gateway setup
+
+### Requirements
+
+- Ubuntu Server / Docker Engine / Docker Compose plugin
+- AI Agent PC と同じLANから directed broadcast を送信できること
+- existing `cloudflared >= 2025.7.0`
+- Tunnel transport が `auto` または `quic`
+- outbound UDP/7844 が許可されていること
+
+Workers VPC は HTTP/2-only Tunnel transport では正常に動作しません。
+
+### Environment
 
 ```bash
 cp .env.example .env
 chmod 600 .env
 ```
-
-`.env`:
 
 ```dotenv
 WOL_MAC=AA:BB:CC:DD:EE:FF
@@ -128,34 +151,16 @@ AI_AGENT_PORT=22
 AI_AGENT_PROBE_TIMEOUT_SECONDS=0.8
 
 WOL_MIN_INTERVAL_SECONDS=30
-REQUIRE_CF_ACCESS=true
+WOL_RELAY_SHARED_SECRET=<long-random-secret>
 LOG_LEVEL=INFO
 ```
 
-**Tunnel token は不要です。**
+`WOL_RELAY_SHARED_SECRET` はWorker Secretと同じ値にします。
 
-### 2. Verify WoL inside the LAN
-
-Cloudflareを設定する前に、LAN内からAIエージェントPCへMagic Packetを送り、
-実際に起動できることを確認してください。
-
-対象PC側では以下を確認します。
-
-- BIOS/UEFI Wake-on-LAN有効
-- NIC / OS Wake-on-LAN有効
-- shutdown後もNICへ給電
-- 有線LAN推奨
-
-### 3. Start wol-api on the home gateway
+### Start relay
 
 ```bash
 docker compose up -d --build
-docker compose ps
-```
-
-health check:
-
-```bash
 curl http://127.0.0.1:8088/health
 ```
 
@@ -165,114 +170,126 @@ Expected:
 {"status":"ok"}
 ```
 
-### 4. Protect wol.y-ohi.com with Cloudflare Access
-
-Cloudflare AccessでSelf-hosted applicationを作成します。
-
-```text
-Application domain:
-wol.y-ohi.com
-```
-
-最小のAllow policy例:
-
-```text
-Action:
-Allow
-
-Include:
-Emails -> 自分のメールアドレス
-```
-
-### 5. Add a route to the existing Tunnel
-
-**新しいTunnelは作成しません。**
-
-現在宅内GWで動いているTunnelに Published application を追加します。
-
-```text
-Hostname:
-wol.y-ohi.com
-
-Service URL:
-http://localhost:8088
-```
-
-既存 `cloudflared` が localhost の `wol-api` へ接続します。
-
-このリポジトリのComposeには `cloudflared` serviceはありません。
-
-## API
-
-### Status
+Internal endpoints require:
 
 ```http
-GET /api/status
+Authorization: Bearer <WOL_RELAY_SHARED_SECRET>
 ```
 
-Response example:
+## Cloudflare / GitHub configuration
 
-```json
-{
-  "gateway": {
-    "status": "online",
-    "role": "wol-relay"
-  },
-  "ai_agent": {
-    "status": "offline",
-    "last_wake_at": null
-  },
-  "probe": {
-    "type": "tcp",
-    "port": 22
-  },
-  "min_interval_seconds": 30
-}
+### GitHub Secrets
+
+```text
+CLOUDFLARE_ACCOUNT_ID
+CLOUDFLARE_API_TOKEN
+WOL_RELAY_SHARED_SECRET
 ```
 
-### Wake
+### GitHub Repository Variable
 
-```http
-POST /api/wake
-X-WOL-Confirm: wake
+```text
+CLOUDFLARE_TUNNEL_ID
 ```
 
-AI PCがすでにprobeへ応答している場合は `409 Conflict` を返し、
-Magic Packetを送りません。
+The Cloudflare API token should be scoped as narrowly as possible. Binding a Worker directly to an existing Tunnel through Workers VPC requires the token owner to have the **Connectivity Directory Admin** role.
 
-## Tests
+### Worker deployment
+
+PRs run CI only. A push to `master` or manual `workflow_dispatch` runs `.github/workflows/deploy-worker.yml` and deploys with `cloudflare/wrangler-action@v4`.
+
+Worker configuration is generated from `worker/wrangler.template.json`; the Tunnel UUID is injected from `CLOUDFLARE_TUNNEL_ID`. Secrets are never written into the generated Wrangler file. The deploy workflow writes an ephemeral, git-ignored JSON secrets file and passes it to `wrangler deploy --secrets-file`, so first deploy can upload code and the required Worker secret together.
+
+The Worker uses:
+
+```text
+Custom Domain: wol.y-ohi.com
+workers.dev: disabled
+Static Assets: worker/public
+VPC binding: HOME_NETWORK -> existing Tunnel UUID
+Private gateway origin: http://localhost:8088
+```
+
+`localhost` is resolved from the Tunnel connector side. If the existing `cloudflared` runs in an isolated container network rather than the gateway host network, the connector must be able to reach the relay service; use host networking or a gateway-local private address/hostname before production cutover.
+
+## Production cutover
+
+1. Add GitHub Secrets:
+   - `CLOUDFLARE_ACCOUNT_ID`
+   - `CLOUDFLARE_API_TOKEN`
+   - `WOL_RELAY_SHARED_SECRET`
+2. Add Repository Variable `CLOUDFLARE_TUNNEL_ID`.
+3. Put the same `WOL_RELAY_SHARED_SECRET` in the gateway `.env`.
+4. Deploy/restart the gateway relay and verify `/health` locally.
+5. Verify `cloudflared --version` is at least `2025.7.0`.
+6. Verify Tunnel transport is QUIC-capable (`auto` or `quic`) and UDP/7844 is allowed.
+7. Confirm Cloudflare Access continues protecting `wol.y-ohi.com`.
+8. Remove the old Tunnel Published Application / conflicting CNAME for `wol.y-ohi.com` **without deleting the Tunnel connector**.
+9. Run the production Worker deployment so its Custom Domain can claim `wol.y-ohi.com`.
+10. Verify:
+    - Access login
+    - UI loads
+    - gateway relay reports online
+    - AI Agent PC status changes correctly
+    - one real Wake operation succeeds
+
+### Rollback
+
+If Worker Custom Domain deployment or Workers VPC connectivity fails:
+
+1. stop further Worker cutover changes;
+2. restore the previous Tunnel Published Application / DNS ownership for `wol.y-ohi.com`;
+3. investigate VPC/Tunnel connectivity without changing the LAN WoL relay contract.
+
+## Development
+
+### Python
 
 ```bash
-make test
-docker compose config
+python -m pip install -r requirements.txt -r requirements-dev.txt
+python -m unittest discover -s tests -v
 ```
 
-## Acceptance criteria
+### Worker
 
-- [ ] `CLOUDFLARE_TUNNEL_TOKEN` がrepo / `.env.example` に存在しない。
-- [ ] Composeに `cloudflared` serviceが存在しない。
-- [ ] 既存Cloudflare Tunnelを利用する。
-- [ ] `wol.y-ohi.com -> http://localhost:8088` が既存Tunnelに設定される。
-- [ ] `wol.y-ohi.com` がCloudflare Accessで保護される。
-- [ ] UIに宅内GWとAIエージェントPCの2台が表示される。
-- [ ] 宅内GWは常時稼働relayとして表示される。
-- [ ] AI PC状態が5秒ごとに更新される。
-- [ ] AI PC online時はWakeボタンが無効。
-- [ ] AI PC offline時のみWake操作できる。
-- [ ] APIから任意MAC/IPを指定できない。
-- [ ] repeated Wake requestがrate limitされる。
-- [ ] Router inbound port forwardingが存在しない。
-- [ ] APIが `127.0.0.1:8088` のみにbindしている。
-- [ ] Magic PacketでAIエージェントPCが実際に起動する。
+```bash
+cd worker
+npm install
+npm test
+npm run typecheck
+```
 
-## Out of scope
+Generate production-shaped Wrangler config locally with a test UUID:
 
-- 宅内GW自身のWake
-- ESP32等の独立relay
-- SwitchBotによる非常用電源制御
-- 複数Wake target
-- remote shutdown / reboot
-- arbitrary shell execution
-- authoritative hardware power-state detection
+```bash
+CLOUDFLARE_TUNNEL_ID=550e8400-e29b-41d4-a716-446655440000 \
+  node scripts/render-wrangler.mjs
+```
 
-宅内GWの非常時復旧は、実際に必要性が生じた時点で独立した経路として追加します。
+A real Wrangler dry-run requires npm/Cloudflare tooling/network access:
+
+```bash
+npx wrangler@4 deploy --dry-run --config wrangler.generated.json
+```
+
+## Future ESP32 extension
+
+The Worker uses a relay abstraction:
+
+```text
+WolRelay
+  |- GatewayRelay   (implemented now)
+  `- Esp32Relay     (future)
+```
+
+A future ESP32 relay can keep an outbound WebSocket to a Durable Object and implement the same logical relay interface. The browser/API contract does not need to change.
+
+Out of scope now:
+
+- ESP32 firmware
+- Durable Objects
+- WebSocket device protocol
+- automatic relay failover
+- waking the home gateway itself
+- remote shutdown/reboot
+- arbitrary target destinations

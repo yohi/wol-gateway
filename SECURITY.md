@@ -1,73 +1,93 @@
 # Security model
 
-## Trust boundary
+## Trust boundaries
 
-`Cloudflare Access` is the authentication and authorization boundary.
+### Browser -> Cloudflare Worker
 
-The application performs only a defense-in-depth presence check for
-`Cf-Access-Jwt-Assertion`; it does **not** independently validate the JWT
-signature. Protect `wol.y-ohi.com` with a Cloudflare Access self-hosted
-application before exposing the existing Tunnel route.
+`wol.y-ohi.com` must be protected by Cloudflare Access. The browser receives only the public UI and public target/relay API.
 
-## Deployment assumption
+The browser never receives:
 
-The home gateway PC is intentionally treated as an always-on infrastructure
-node. It runs:
+- target MAC address
+- LAN broadcast address
+- home gateway private origin
+- Cloudflare Tunnel credentials
+- `WOL_RELAY_SHARED_SECRET`
 
-- the existing `cloudflared` connector;
-- this `wol-api` container;
-- the LAN-side Wake-on-LAN relay.
+### Worker -> home gateway
 
-The home gateway is therefore shown as online when this application is
-reachable. This project does **not** attempt to wake the home gateway itself.
+The Worker reaches the LAN relay through a Workers VPC Network binding named `HOME_NETWORK`, bound directly to the existing Cloudflare Tunnel.
 
-## Deliberate constraints
+Workers VPC Network bindings provide network-wide reachability through the bound Tunnel. To reduce SSRF risk, the Worker contains no generic proxy endpoint and `GatewayRelay` uses a fixed private origin/path only.
 
-- The AI agent PC MAC address is server-side configuration only.
-- The broadcast address is server-side configuration only.
-- The AI reachability probe host/port is server-side configuration only.
-- No arbitrary destination can be supplied by an HTTP request.
-- No arbitrary shell command execution exists.
+The internal FastAPI relay additionally requires:
+
+```http
+Authorization: Bearer <WOL_RELAY_SHARED_SECRET>
+```
+
+The secret is compared with `hmac.compare_digest`, is never logged, and must be stored only in the gateway `.env` and Cloudflare Worker secret storage / GitHub Actions secret context.
+
+## Fixed-target constraints
+
+- Public target ID is fixed to `ai-agent`.
+- Current relay ID is fixed to `home-gateway`.
+- MAC address is server-side gateway configuration only.
+- Broadcast address is server-side gateway configuration only.
+- TCP probe host/port are server-side gateway configuration only.
+- Worker VPC destination is fixed in `GatewayRelay`.
+- No request body/query field can choose a MAC, host, URL, broadcast address, or shell command.
+- Public Wake requests require `X-WOL-Confirm: wake`; no CORS policy is enabled, preventing a simple cross-site form from issuing a valid Wake request.
 - No remote shutdown/reboot endpoint exists.
-- `/api/wake` only accepts POST.
-- A custom confirmation header is required.
-- CORS is not enabled.
-- Repeated wake requests are rate limited in-process.
-- The API binds only to `127.0.0.1`.
-- The container drops all Linux capabilities and uses `no-new-privileges`.
-- The container root filesystem is read-only.
+- No generic HTTP/TCP proxy exists.
 
 ## Status semantics
 
-The AI agent PC is shown as online when the configured TCP endpoint answers.
+`offline` means the configured target TCP endpoint did not answer while the gateway relay itself was reachable.
 
-A TCP connection refusal still proves the host's TCP stack answered and is
-therefore considered online. A timeout or other network error is shown as
-offline.
+If the relay cannot be reached, target state is `unknown`, not `offline`. This avoids presenting a network/control-plane failure as proof that the PC is powered off.
 
-This is network reachability, not an authoritative hardware power sensor.
-Configure a stable probe endpoint such as SSH on the AI agent PC.
+## Gateway exposure
 
-## Tunnel credentials
+The FastAPI container uses host networking but Uvicorn binds only to `127.0.0.1:8088`. No router inbound port forwarding is required.
 
-This repository does **not** store or run a Cloudflare Tunnel token.
+Workers VPC accesses the relay through the existing Tunnel. If `cloudflared` runs inside a container, its network namespace must be able to reach the relay origin; host networking is the simplest arrangement for the documented `localhost:8088` origin.
 
-The existing `cloudflared` installation on the home gateway remains
-responsible for Tunnel credentials. The only required Tunnel change is adding
-`wol.y-ohi.com -> http://localhost:8088` to the existing Tunnel.
+## Cloudflare requirements
 
-## Secret handling
+Workers VPC is beta.
 
-Do not commit `.env`.
+For Workers VPC over Cloudflare Tunnel:
+
+- `cloudflared >= 2025.7.0`
+- Tunnel protocol `auto` or `quic`
+- outbound UDP port 7844 available
+- direct Tunnel binding requires Connectivity Directory Admin
+
+The deployment API token should have the minimum Worker/zone/connectivity permissions necessary for this deployment.
+
+## CI/CD secrets
+
+GitHub Secrets:
+
+- `CLOUDFLARE_ACCOUNT_ID`
+- `CLOUDFLARE_API_TOKEN`
+- `WOL_RELAY_SHARED_SECRET`
+
+GitHub Repository Variable:
+
+- `CLOUDFLARE_TUNNEL_ID`
+
+The Tunnel UUID is an identifier, not a credential. Tunnel tokens/credentials must not be committed or passed through this repository. Production CI writes `WOL_RELAY_SHARED_SECRET` only to an ephemeral git-ignored secrets file on the GitHub-hosted runner and supplies it to Wrangler with `--secrets-file`; the cleanup step removes the file even on failure.
+
+## Logging
 
 Do not log:
 
-- Cloudflare Access JWTs
+- Access JWTs
+- Cloudflare API tokens
 - Tunnel credentials
-- target MAC addresses
+- relay shared secret
+- target MAC address
 
-## Exposure
-
-No router inbound port forwarding is required. If port 8088 is reachable from
-the LAN or Internet, treat that as a deployment error and correct the bind or
-network configuration before use.
+Gateway logs may record that a Magic Packet was sent and the configured broadcast/port. Worker error responses must remain sanitized and must not expose private origin URLs or upstream stack details.

@@ -4,46 +4,38 @@ import sys
 import unittest
 
 
-class CloudflareAccessConfigTests(unittest.TestCase):
-    def run_app_with_access_setting(
-        self,
-        value: str,
-    ) -> subprocess.CompletedProcess[str]:
+class RelayConfigTests(unittest.TestCase):
+    def base_env(self):
         env = os.environ.copy()
         env["WOL_MAC"] = "AA:BB:CC:DD:EE:FF"
         env["AI_AGENT_HOST"] = "192.0.2.10"
-        env["REQUIRE_CF_ACCESS"] = value
+        env["WOL_RELAY_SHARED_SECRET"] = "test-secret"
+        env.pop("REQUIRE_CF_ACCESS", None)
+        return env
 
-        return subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                "from app.main import REQUIRE_CF_ACCESS; print(REQUIRE_CF_ACCESS)",
-            ],
+    def test_valid_required_configuration_imports(self):
+        result = subprocess.run(
+            [sys.executable, "-c", "from app.main import WOL_RELAY_SHARED_SECRET; print(WOL_RELAY_SHARED_SECRET)"],
+            capture_output=True,
+            check=False,
+            env=self.base_env(),
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "test-secret")
+
+    def test_missing_relay_secret_fails_startup(self):
+        env = self.base_env()
+        env.pop("WOL_RELAY_SHARED_SECRET")
+        result = subprocess.run(
+            [sys.executable, "-c", "import app.main"],
             capture_output=True,
             check=False,
             env=env,
             text=True,
         )
-
-    def test_supported_true_values_enable_access_check(self):
-        for value in ("1", "true", "yes", "on"):
-            with self.subTest(value=value):
-                result = self.run_app_with_access_setting(value)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(result.stdout.strip(), "True")
-
-    def test_supported_false_values_disable_access_check(self):
-        for value in ("0", "false", "no", "off"):
-            with self.subTest(value=value):
-                result = self.run_app_with_access_setting(value)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(result.stdout.strip(), "False")
-
-    def test_unrecognized_value_fails_startup(self):
-        result = self.run_app_with_access_setting("sometimes")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("REQUIRE_CF_ACCESS", result.stderr)
+        self.assertIn("WOL_RELAY_SHARED_SECRET", result.stderr)
 
 
 if __name__ == "__main__":

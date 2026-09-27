@@ -11,7 +11,7 @@
     <header>
       <p class="eyebrow">HOME POWER CONTROL</p>
       <h1>Wake-on-LAN</h1>
-      <p class="lead">宅内ゲートウェイをrelayとして、AIエージェントPCを監視・起動します。</p>
+      <p class="lead">Cloudflare Workerから宅内relayを経由してAIエージェントPCを監視・起動します。</p>
     </header>
 
     <section class="grid" aria-live="polite">
@@ -21,13 +21,10 @@
             <p class="device-kind">WOL RELAY</p>
             <h2>宅内ゲートウェイPC</h2>
           </div>
-          <span class="status online">
-            <span class="dot" aria-hidden="true"></span>
-            オンライン
-          </span>
+          <span id="gateway-status" class="status unknown"><span class="dot"></span>確認中</span>
         </div>
-        <p class="description">このページを配信している常時稼働のWoL relayです。</p>
-        <button type="button" disabled>常時稼働</button>
+        <p class="description">LAN内のWake-on-LAN relayです。</p>
+        <button type="button" disabled>Relay</button>
       </article>
 
       <article class="device-card">
@@ -36,23 +33,16 @@
             <p class="device-kind">WOL TARGET</p>
             <h2>AIエージェントPC</h2>
           </div>
-          <span id="ai-status" class="status unknown">
-            <span class="dot" aria-hidden="true"></span>
-            確認中
-          </span>
+          <span id="ai-status" class="status unknown"><span class="dot"></span>確認中</span>
         </div>
-        <p id="ai-detail" class="description">到達状態を確認しています…</p>
+        <p id="ai-detail" class="description">状態を確認しています…</p>
         <button id="wake" type="button" disabled>確認中…</button>
         <p id="result" class="result" aria-live="polite"></p>
       </article>
     </section>
 
-    <footer>
-      <span id="updated">未更新</span>
-      <span>AI状態判定: TCP reachability</span>
-    </footer>
+    <footer><span id="updated">未更新</span><span>5秒ごとに更新</span></footer>
   </main>
-
   <script src="/app.js"></script>
 </body>
 </html>

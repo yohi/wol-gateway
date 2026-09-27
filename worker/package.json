@@ -1,0 +1,15 @@
+{
+  "name": "wol-gateway-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "render-config": "node scripts/render-wrangler.mjs",
+    "wrangler:dry-run": "npx wrangler@4 deploy --dry-run --config wrangler.generated.json"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}

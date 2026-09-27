@@ -1,0 +1,6 @@
+dist/
+wrangler.generated.json
+.dev.vars
+node_modules/
+.secrets.production.json
+.secrets.ci.json

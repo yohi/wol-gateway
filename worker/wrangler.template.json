@@ -1,0 +1,27 @@
+{
+  "name": "wol-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-27",
+  "workers_dev": false,
+  "routes": [
+    {
+      "pattern": "wol.y-ohi.com",
+      "custom_domain": true
+    }
+  ],
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
+  },
+  "vpc_networks": [
+    {
+      "binding": "HOME_NETWORK",
+      "tunnel_id": "__CLOUDFLARE_TUNNEL_ID__",
+      "remote": true
+    }
+  ],
+  "secrets": {
+    "required": ["WOL_RELAY_SHARED_SECRET"]
+  }
+}
